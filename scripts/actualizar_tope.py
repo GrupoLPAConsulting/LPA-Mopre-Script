@@ -48,6 +48,7 @@ ANCLAS = {
     "202605": 4303619.01,   # Res. ANSES 110/2026
     "202606": 4414652.38,   # Res. ANSES 139/2026
     "202607": 4509567.41,   # Res. ANSES 186/2026
+    "202611": 4861685.38,   # Res. ANSES 304/2026, art. 3
 }
 # Movilidades publicadas en esas resoluciones (para el autotest del IPC):
 # período_tope -> (mes_IPC, % con 2 decimales)
@@ -163,9 +164,13 @@ def main():
     topes = doc.setdefault("topes", {})
     alertas = []
 
-    # sembrar anclas si faltan
+    # Sembrar y corregir anclas oficiales. Un valor manual se conserva; los
+    # valores estimados o confirmados desde páginas resumidas se reemplazan por
+    # los centavos exactos de la resolución ANSES.
     for per, val in ANCLAS.items():
-        if per not in topes:
+        actual = topes.get(per)
+        if actual is None or (actual.get("estado") != "manual" and
+                              abs(float(actual.get("valor", 0)) - val) > 0.005):
             topes[per] = {"valor": val, "fuente": "resolución ANSES (ancla verificada)",
                           "estado": "confirmado"}
 
@@ -179,15 +184,22 @@ def main():
         actual = topes.get(per_imss)
         if actual is None:
             topes[per_imss] = {"valor": val_imss, "fuente": "IMSS (oficial, redondeado a pesos)",
-                               "estado": "confirmado"}
+                               "estado": "oficial_redondeado"}
+            alertas.append(
+                f"IMSS publicó {per_imss} redondeado a pesos ({val_imss:.2f}); "
+                "todavía falta obtener los centavos por movilidad o por la resolución ANSES.")
         elif actual["estado"] == "estimado":
             if abs(round(actual["valor"]) - round(val_imss)) <= 1:
                 actual["estado"] = "confirmado"
-                actual["fuente"] += " · confirmado por IMSS"
+                actual["fuente"] += " · importe entero corroborado por IMSS"
             else:
                 alertas.append(
                     f"CRUCE FALLIDO en {per_imss}: estimado {actual['valor']:.2f} vs "
                     f"oficial IMSS {val_imss:.2f}. Verificar a mano la resolución ANSES.")
+        elif (abs(float(actual["valor"]) - val_imss) > 0.005 and
+              abs(round(float(actual["valor"])) - round(val_imss)) <= 1):
+            # IMSS elimina los centavos: conserva la cifra exacta y sólo valida el entero.
+            actual["fuente"] = actual.get("fuente", "") + " · importe entero corroborado por IMSS"
     elif per_imss is None:
         alertas.append("La página IMSS cambió de formato: no se encontró período o valor.")
 
@@ -213,6 +225,17 @@ def main():
                     topes[per] = {"valor": valor,
                                   "fuente": f"calculado por movilidad (IPC {mes_ipc}: {ipc[mes_ipc]:.2f}%)",
                                   "estado": "estimado"}
+                elif previo["estado"] == "oficial_redondeado":
+                    if abs(round(valor) - round(previo["valor"])) <= 1:
+                        previo["valor"] = valor
+                        previo["fuente"] = (f"calculado por movilidad (IPC {mes_ipc}: "
+                                             f"{ipc[mes_ipc]:.2f}%) · importe entero corroborado por IMSS")
+                        previo["estado"] = "confirmado"
+                        alertas[:] = [a for a in alertas if per not in a]
+                    else:
+                        alertas.append(
+                            f"CRUCE FALLIDO en {per}: movilidad {valor:.2f} vs "
+                            f"IMSS redondeado {previo['valor']:.2f}. Verificar la resolución ANSES.")
                 elif previo["estado"] == "estimado" and abs(previo["valor"] - valor) > 0.005:
                     previo["valor"] = valor
                     previo["fuente"] = f"calculado por movilidad (IPC {mes_ipc}: {ipc[mes_ipc]:.2f}%)"
